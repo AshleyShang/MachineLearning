@@ -1,0 +1,316 @@
+---
+title: "MNIST Recognizer"
+author: "Ashley Shang "
+output:
+  html_document: 
+    theme: cosmo
+    toc: yes
+  pdf_document: default
+urlcolor: BrickRed
+---
+
+
+```{r, setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, 
+                      fig.align = 'center', message = FALSE)
+```
+
+```{r, load-packages, message=FALSE}
+library(caret)
+library(nnet)
+library(randomForest)
+library(xgboost)
+library(knitr)
+library(kableExtra)
+library(tidyverse)
+```
+
+
+***
+
+# Abstract
+
+> This project focuses on the problem of hand-written digit recognition on reduced datasets. For experiment and evaluation, MNIST dataset was used to evaluate methods quickly. To see the effectiveness of methods on reduced data sets, smaller modified versions of MNIST were created. Random forest was implemented as reference method. To gain better results, XGboost with tuned parameters was used. To improve results and decrease error rate a neural network with PCA was employed and results  were shown. 
+
+
+
+
+***
+
+# Introduction
+
+Handwritten digit recognition is still one of the hot topics in artificial  intelligence area dues to its wide area of applications from postal mail sorting to check processing. With the rise of high-power computing machines, more and more methods were introduced in the past two decades and their error rate, performance, and run time were studied.  
+
+MNIST is a handwritten digit images that has often been cited in many leading research and thus has become a benchmark for image recognition and machine learning studies. There have been many attempts by researchers in trying to identify the appropriate models and pre-processing methods to classify the MNIST dataset.
+
+
+
+
+
+***
+
+# Methods
+
+## Data
+
+The MNIST [^1] database (Modified National Institute of Standards and Technology database) is a large database of handwritten digits that is commonly used for training various image processing systems. It was created by "re-mixing" the samples from NIST's original datasets. 
+
+The MNIST database contains 60,000 training images and 10,000 testing images.[^2] Half of the training set and half of the test set were taken from NIST's training dataset, while the other half of the training set and the other half of the test set were taken from NIST's testing dataset.[^3] 
+
+The set of images in the MNIST database is a combination of two of NIST's databases: Special Database 1 and Special Database 3. Special Database 1 and Special Database 3 consist of digits written by high school students and employees of the United States Census Bureau, respectively.[^4]
+
+
+
+```{r, loading-funcs}
+# helper function for visualization
+show_digit = function(arr784, col = gray(12:1 / 12), ...) {
+  image(matrix(as.matrix(arr784[-785]), nrow = 28)[, 28:1], col = col, ...)
+}
+
+# load image files
+load_image_file = function(filename) {
+  ret = list()
+  f = file(filename, 'rb')
+  readBin(f, 'integer', n = 1, size = 4, endian = 'big')
+  n    = readBin(f, 'integer', n = 1, size = 4, endian = 'big')
+  nrow = readBin(f, 'integer', n = 1, size = 4, endian = 'big')
+  ncol = readBin(f, 'integer', n = 1, size = 4, endian = 'big')
+  x = readBin(f, 'integer', n = n * nrow * ncol, size = 1, signed = FALSE)
+  close(f)
+  data.frame(matrix(x, ncol = nrow * ncol, byrow = TRUE))
+}
+
+# load label files
+load_label_file = function(filename) {
+  f = file(filename, 'rb')
+  readBin(f, 'integer', n = 1, size = 4, endian = 'big')
+  n = readBin(f, 'integer', n = 1, size = 4, endian = 'big')
+  y = readBin(f, 'integer', n = n, size = 1, signed = FALSE)
+  close(f)
+  y
+}
+```
+
+```{r, get-data}
+# load images
+train = load_image_file("train-images-idx3-ubyte")
+test  = load_image_file("t10k-images-idx3-ubyte")
+
+# load labels
+train$y = as.factor(load_label_file("train-labels-idx1-ubyte"))
+test$y  = as.factor(load_label_file("t10k-labels-idx1-ubyte"))
+```
+
+```{r, scaling-x}
+train[,-785] <- train[,-785] / 255
+test[,-785] <- test[,-785] / 255
+```
+
+```{r, subset-data}
+trn <- train[1:1000, ]
+tst <- test[1:1000,]
+```
+
+
+
+## Modeling
+
+In order to test the performance different models hold, three modeling techniques were considered: 
+
+* Random Forest: as a reference
+* XGBoost: with tuned parameters
+* Neural Network: with PCA
+
+
+
+```{r, rf}
+set.seed(42)
+rf_fit = randomForest(y ~ ., data = trn)
+rf_pred = predict(rf_fit, tst)
+rf_acc <- mean(rf_pred == tst$y) #0.864
+#table(predicted = rf_pred, actual = tst$y)
+```
+
+
+```{r, xgboost}
+params <- list(
+          booster           = "gbtree",
+          eta               = 0.2,              
+          max_depth         = 5,               
+          subsample         = 0.70, 
+          objective         = "multi:softmax",   
+          num_class         = 10,               
+          eval_metric       = "merror"
+)
+```
+
+```{r, get-train}
+trn_x <- model.matrix(y ~ ., data = trn)
+dtrn <- xgb.DMatrix(data = trn_x, label = as.numeric(as.character(trn$y)))
+```
+```{r, get-test}
+tst_x <- model.matrix(y ~ ., data = tst)
+#dtst <- xgb.DMatrix(data = tst_x, label = as.numeri(as.character(tst$y)))
+```
+
+```{r, get-iter}
+xgb_cv <- xgb.cv(params = params, data = dtrn, 
+                 nrounds = 100, nfold = 5,
+                 stratified = TRUE, verbose = FALSE,
+                 early_stopping_rounds = 10,
+                 maximize = FALSE)
+```
+
+
+```{r, xgb-model}
+set.seed(42)
+xgb_fit <- xgb.train(params = params, data = dtrn,
+                     nrounds = 42, maximize = FALSE,
+                     verbose = 0,
+                     watchlist = list(trn_x = dtrn))
+```
+
+
+```{r, pca-nnet}
+x <- trn[,-785]
+y <- trn$y
+pca_x <- prcomp(cov(x))
+```
+
+```{r}
+x_final <- as.matrix(x) %*% pca_x$rotation[,1:45]
+y_final <- class.ind(y)
+```
+
+```{r, nnet-mod}
+set.seed(42)
+nnet_fit <- nnet(x_final, y_final, trace = FALSE,
+                 size = 100, softmax = TRUE,
+                 maxit = 130, MaxNWts = 80000)
+```
+
+
+
+
+## Evaluation
+
+To evaluate the ability to classify or recongnize the digits with these different models, the data was split into training and testing sets, and further selected the first 1000 rows of both training and testing datasets in order to reduce the time complexity. Accuracies of the classification were reported using the test data in the Results section.
+
+
+
+```{r, xgb-acc}
+xgb_pred <- predict(xgb_fit, tst_x)
+xgb_pred <- as.factor(xgb_pred)
+xgb_acc <- mean(xgb_pred == tst$y) #.844
+```
+
+```{r, nnet-acc}
+tst_final <- as.matrix(tst[, -785]) %*%  pca_x$rotation[,1:45]
+nnet_pred <- predict(nnet_fit, tst_final, type="class")
+nnet_acc <- mean(nnet_pred == tst$y)#.879
+```
+
+
+
+
+
+
+***
+
+# Results
+
+```{r, kable}
+results <- data.frame("random forest"  = rf_acc, 
+                      "XGBoost"        = xgb_acc, 
+                      "Neural Network" = nnet_acc,
+                      check.names = FALSE)
+
+
+results %>% 
+  kable("html") %>% 
+  kable_styling("striped", full_width = FALSE)
+```
+
+
+
+
+
+
+***
+
+# Discussion
+
+As we can see in the results above, the XGBoost model seems act a bit worse than the random forest, and the neural network with PCA has the best performance in prediction. But be aware of the datasets that we employed. In the analysis only part of the data was used, so it is lack of evidence to say which model is best and which model is worst in recognization. Generally XGBoost will obtain a better result than random forest if applied on the whole dataset. However, there definitely is room for improvement for all these three models. In practice, the SVM and Convolution Neural Network can also be considered to get a satisfactory results.
+
+
+
+
+
+***
+
+# Appendix
+
+## EDA
+
+
+```{r, visual}
+plotTrain <- function(images){
+  op <- par(no.readonly=TRUE)
+  x <- ceiling(sqrt(length(images)))
+  par(mfrow=c(x, x), mar=c(.1, .1, .1, .1))
+  
+  for (i in images){ #reverse and transpose each matrix to rotate images
+    m <- matrix(train[i,-785], nrow=28, byrow=TRUE)
+    m <- matrix(unlist(apply(m, 2, rev)), nrow = 28)
+    image(t(m), col=grey.colors(255), axes=FALSE)
+    text(0.05, 0.2, col="white", cex=1.2, train[i, 785])
+  }
+  par(op) #reset the original graphics parameters
+}
+```
+
+```{r out.width = "50%"}
+plotTrain(1:36)
+```
+
+
+```{r, fig.width=20, fig.height=10}
+par(mfrow = c(1, 2))
+barplot(table(train$y), 
+        col=rainbow(10, 0.3), 
+        main="n Digits in Train")
+
+
+vexplained <- as.data.frame(pca_x$sdev^2/sum(pca_x$sdev^2))
+vexplained <- cbind(c(1:784), vexplained, cumsum(vexplained[,1]))
+colnames(vexplained) <- c("No_of_Principal_Components",
+                          "Individual_Variance_Explained",
+                          "Cumulative_Variance_Explained")
+
+# Plotting the curve using the datatable obtained
+plot(vexplained$No_of_Principal_Components,
+     vexplained$Cumulative_Variance_Explained, 
+     xlim = c(0,100), type = 'b', pch = 16, cex = .8, 
+     xlab = "Principal Componets", 
+     ylab = "Cumulative Variance Explained",
+     main = 'Principal Components vs Cumulative Variance Explained')
+```
+
+
+There is around 6,000 observations for each digit. Each row has 784 columns (pixels) which form a 28x28 image. 
+
+
+
+
+
+[^1]: [The MNIST Database](http://yann.lecun.com/exdb/mnist/)
+
+[^2]: Kussul, Ernst; Tatiana Baidyk (2004). "Improved method of handwritten digit recognition tested on MNIST database". Image and Vision Computing. 22 (12): 971–981. 
+
+[^3]: Zhang, Bin; Sargur N. Srihari (2004). "Fast k -Nearest Neighbor Classification Using Cluster-Based Trees". IEEE Transactions on Pattern Analysis and Machine Intelligence. 26 (4): 525–528.
+
+[^4]: LeCun, Yann; Corinna Cortes; Christopher J.C. Burges. "MNIST handwritten digit database, Yann LeCun, Corinna Cortes and Chris Burges". Retrieved 17 August 2013.
+
+
+
+

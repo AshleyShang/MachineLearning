@@ -1,0 +1,459 @@
+---
+title: "Heart Disease Prediction"
+author: "Ashley Shang (shumin2@illinois.edu)"
+output:
+  html_document: 
+    theme: cosmo
+    toc: yes
+  pdf_document: default
+urlcolor: BrickRed
+---
+
+```{r, setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, 
+                      fig.align = 'center', message = FALSE)
+```
+
+```{r, load-packages, include = FALSE}
+library(readr)
+library(tibble)
+library(rsample)
+library(dplyr)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+library(purrr)
+library(MASS)
+library(nnet)
+library(klaR)
+library(pROC)
+library(randomForest)
+library(gbm)
+```
+
+# abstract
+ > Heart Disease is one of the major concern for the society today. It is difficult to manually determine the odds of getting heart disease based on risk factors. However, machine learning techniques are useful to predict the output from existing data.
+ 
+---
+
+# Introduction
+
+Heart disease is one of the biggest cause for morbidity and mortality among the population of the world. Prediction of cardiovascular disease is regarded as one of the most important subject in the section of clinical data analysis. The amount of data in the healthcare industry is huge. Data mining turns the large collection of raw healthcare data into information that can help to make informed decision and prediction.
+
+heart disease is a major concern to be dealt with nowadays. But it is difficult to identify heart disease because of several contributory risk factors such as diabetes, high blood pressure, high cholesterol, abnormal pulse rate and many other factors. Due to such constraints scientists have turned towards modern approaches like Data Mining and Machine Learning for predicting the disease.
+
+Machine learning techniques were applied to a subset of heart disease data from UCI ML repository. 13 variables were used for classifying whether a person is suffering from a heart disease or not. The results indicate that by using simple models, this prediction can be made with an acceptable amount of error. However, practical and statistical limitations suggest the need for further investigation.
+
+
+
+
+
+---
+
+# Methods 
+## Data
+This database from UCI Machine Learning Repository[^1], contains 76 attributes, but this experiment refers to using a subset of 11 of them, along with two manually added variables. Four databases have been used by ML researchers to this date. The "goal" field refers to the presence of heart disease in the patient. 
+
+## Modeling
+
+In order to predict whether a particular patient has heart disease or not, three modeling techniques were considered: logistic regression, random forest, and boosting tree model. Default tuning parameters were used to train the boosting tree model. Variable `trestbps` is deleted for analysis  after EDA. In addition, `oldpeak` is highly right-skewed, so perform `log1p` transformation on the data.
+
+
+## Evaluation
+
+To evaluate the ability to classify whether one has heart disease with these models, the data was split into training and testing sets, and 5-fold cross validation technique has been involved. AUC and accuracy of the models are reported using the test data in the Results section.
+
+```{r}
+data <- read.csv("data/heart-disease.csv")
+data = data %>% 
+  mutate_if(is.character, as.factor)
+
+data$num_bin = factor(case_when(
+  data$num == "v0" ~ "none",
+  TRUE ~ "some"
+))
+
+data <- as_tibble(data)
+data_trn = data %>% sample_frac(0.80)
+```
+
+
+```{r}
+set.seed(42)
+trail <- data[, -c(4, 11)]
+
+trail_split <- initial_split(trail, 0.80)
+trn_data = training(trail_split)
+tst_data = testing(trail_split)
+
+```
+
+
+```{r, include=FALSE, warning=FALSE}
+auc = list()
+accuracy = list()
+
+# logistic model
+set.seed(123)
+logistic_model <- train(num_bin ~ ., data=trn_data, 
+                        trControl = trainControl(method = "cv", number = 5),
+                        method = 'glm', family = 'binomial')
+
+logistic_pred <- predict(logistic_model, tst_data)
+logistic_prob <- predict(logistic_model, tst_data, type='prob')[2]
+logistic_confmat <- confusionMatrix(logistic_pred, 
+                                    tst_data$num_bin, 
+                                    positive = "some")
+
+auc$logistic <- roc(as.numeric(tst_data$num_bin),
+                    as.numeric(as.matrix(logistic_prob)))$auc
+accuracy$logistic <- logistic_confmat$overall['Accuracy']
+```
+
+```{r, include=FALSE, warning=FALSE}
+set.seed(123)
+
+#rf
+rf_model <- randomForest(num_bin ~ .,
+                    data=trn_data,
+                    importance=TRUE,
+                    ntree=2000)
+rf_pred <- predict(rf_model, tst_data)
+rf_prob <- predict(rf_model, tst_data, type='prob')[, 2]
+rf_confmat <- confusionMatrix(rf_pred,
+                              tst_data$num_bin, 
+                              positive = "some")
+
+
+auc$rf <- roc(as.numeric(tst_data$num_bin),
+              as.numeric(as.matrix(rf_prob)))$auc
+accuracy$rf <- rf_confmat$overall['Accuracy']
+```
+
+```{r}
+set.seed(123)
+
+#boosting model
+boost_model <- train(num_bin ~ ., data = trn_data, method = 'gbm',
+                    trControl = trainControl(method = 'cv', number = 5),
+                    verbose=FALSE)
+
+boost_pred <- predict(boost_model, tst_data)
+boost_prob <- predict(boost_model, tst_data, type='prob')[2]
+boost_confmat <- confusionMatrix(boost_pred, tst_data$num_bin)
+
+#ROC Curve
+auc$boost <- roc(as.numeric(tst_data$num_bin),
+                 as.numeric(as.matrix((boost_prob))))$auc
+accuracy$boost <- boost_confmat$overall['Accuracy']  
+```
+
+
+---
+
+# Result
+
+```{r}
+auc <- data.frame(as.numeric(auc))
+names(auc) <- "AUC"
+accuracy <- data.frame(as.numeric(accuracy))
+names(accuracy) <- "Accuracy"
+result <- cbind(auc, accuracy)
+rownames(result) <- c("logistic regression", 
+                      "random forest", 
+                      "boosting tree")
+result %>% 
+  kable("html") %>% 
+  kable_styling("striped", full_width = FALSE)
+```
+
+
+
+
+---
+
+# Discussion
+ 
+In EDA part, from density graph, one can observe that patients equal chances of having heart disease irrespective of the value of blood pressure. This observation is just opposite to the common thought. Therefore this parameter is removed before model implementation. 
+
+From above results, the "best" model is the relative simple logistic regression model with an Area under the ROC of 0.89 and the heart disease prediction with an accuracy of 0.82. However, due to the limitations of the data, it shows randomness, which will add error to the classification. There are quite a few missing values, and the samples on different values of categorical variables have distinguishly different sizes. All above attributes are not conductive to analyzing. Because of the small amount of data, EDA barely helps to find out the traits of the data underneath the hood. It calls for bigger dataset and further analysis to draw a conclusion.
+
+
+---
+
+# Appendix
+## Data Dictionary
+
+* `age` - age in years
+
+* `sex` - sex
+
+* `cp` - chest pain type
+
+* `trestbps` - resting blood pressure (in mm Hg on admission to the hospital)
+
+* `chol` - serum cholestoral in mg/dl
+
+* `fbs` - (fasting blood sugar > 120 mg/dl) (1 = true; 0 = false)
+
+* `restecg` - resting electrocardiographic results
+
+* `thalach` - maximum heart rate achieved
+
+* `exang` - exercise induced angina
+
+* `oldpeak` -  ST depression induced by exercise relative to rest
+
+* `location` -  databases where the data comes from
+
+* `num_bin` - diagnosis of heart disease
+
+For additional background on the data, see the data source on UCI ML Repository.
+
+
+## EDA 
+
+```{r}
+#rake a look at the frequncy table of sex
+data %>% 
+  dplyr::select(sex,
+         num_bin) %>%
+  group_by(sex, result = num_bin) %>%
+  summarize(Count = n()) %>%
+  spread(sex, Count, fill = 0) %>% 
+  kable("html") %>% 
+  kable_styling("striped")
+
+#come closer
+data %>%
+  count(sex, result = num_bin) %>%
+  group_by(sex) %>%      
+  mutate(prob = prop.table(n)) %>% 
+  kable("html") %>% 
+  kable_styling("striped")
+```
+```{r}
+data %>% 
+  dplyr::select(cp,
+         num_bin) %>%
+  group_by(cp, result = num_bin) %>%
+  summarize(Count = n()) %>%
+  spread(result, Count, fill = 0) %>% 
+  kable("html") %>% 
+  kable_styling("striped")
+```
+
+```{r}
+# relationships between cp & different types of heart diseases
+df <- data.frame(data$cp, data$num)
+colnames(df) <- c("cp", "result")
+
+ggplot(data = df, aes(cp, ..count.., fill = result)) +
+  geom_bar(position = "dodge") + 
+  scale_fill_manual("Result", 
+                    values = alpha(c("v0" = "#FF9999", 
+                                     "v1" = "#FF6666", 
+                                     "v2" = "#FF0000", 
+                                     "v3" = "#CC0000", 
+                                     "v4" = "#990000"), .7))
+```
+
+take a look at the frequncy table of `fbs`:
+```{r}
+#take a look at the frequncy table of fbs
+data %>% 
+  dplyr::select(fbs,
+         num_bin) %>%
+  group_by(fbs, result = num_bin) %>%
+  summarize(Count = n()) %>%
+  spread(fbs, Count, fill = 0) %>% 
+  kable("html") %>% 
+  kable_styling("striped") 
+```
+also `exang`:
+```{r}
+#exang
+data %>% 
+  dplyr::select(exang,
+         num_bin) %>%
+  group_by(exang, result = num_bin) %>%
+  summarize(Count = n()) %>%
+  spread(exang, Count, fill = 0) %>% 
+  kable("html") %>% 
+  kable_styling("striped")
+
+#restecg
+data %>% 
+  dplyr::select(restecg,
+         num_bin) %>%
+  group_by(restecg, result = num_bin) %>%
+  summarize(Count = n()) %>%
+  spread(result, Count, fill = 0) %>% 
+  kable("html") %>% 
+  kable_styling("striped")
+```
+
+```{r}
+par(mfrow = c(4, 3))
+age_count <- count(data, age)
+
+#ploting the age with frquency greater than 10
+plot1 <- ggplot(age_count, aes(x = age_count$age, y = age_count$n)) + 
+  ggtitle("Age Analysis") +
+  xlab("Age")  +
+  ylab("Age Count") +
+  geom_bar(stat="identity")
+
+young <- data[which((data$age < 45)), ]
+middle <- data[which((data$age >= 45) & (data$age < 55)), ]
+elderly <- data[which(data$age > 55), ]
+groups <- data.frame(age_group = c("young", "middle", "elderly"), 
+                     group_count = c(nrow(young), 
+                                     nrow(middle), nrow(elderly)))
+
+plot2 <- ggplot(groups, aes(x = groups$age_group, y = groups$group_count, fill=groups$age_group)) + 
+  ggtitle("Age Analysis") +
+  xlab("Age Group")  +
+  ylab("group Count") +
+  geom_bar(stat="identity") +
+  scale_fill_manual("Age Group", 
+                    values = alpha(c("#990000",
+                                     "#FF0000",
+                                     "#FF9999"), .5))
+```
+```{r}
+data$age <- factor(case_when(
+  data$age < 45 ~ "0",
+  data$age >= 45 & data$age < 55 ~ "1",
+  data$age >= 55 ~ "2"
+))
+```
+```{r}
+
+plot3 <- ggplot(data, aes(x= data$age, y=data$sex, colour=data$num_bin)) + 
+  geom_boxplot(stat = "boxplot",
+               position = "dodge2") +
+  geom_jitter(width = 0.2) +
+  xlab("Age Groups") +
+  ylab("Gender") +
+  ggtitle("Analysis of gender with different age group ") +
+  scale_fill_discrete(name = "Heart disease", labels = c("No", "Yes"))
+
+```
+
+```{r}
+#trestbps
+
+#remove outliers
+data$trestbps = ifelse(data$trestbps > 180 | data$trestbps < 80, NA, data$trestbps)
+data$trestbps = ifelse(is.na(data$trestbps), median(data$trestbps[which(!is.na(data$trestbps))]), data$trestbps)
+
+
+plot4 <- ggplot(data, aes(x=trestbps)) + 
+  geom_histogram() +
+  xlab("Resting blood pressure") +
+  ylab("Count") +
+  ggtitle("Analysis of blood pressure")
+
+
+# Density graph for trestbps (resting blood pressure)
+plot5 <- ggplot(data, aes(x = trestbps, fill = num_bin)) +
+  geom_density(alpha=0.5) +
+  scale_fill_discrete(name = "Heart disease", labels = c("No", "Yes"))
+```
+
+
+```{r}
+# Histogram for oldpeak (ST depression induced by exercise relative to rest)
+
+data2 <- data[-which(data$oldpeak < 0),]
+plot6 <- ggplot(data2, aes(x=oldpeak)) + 
+  geom_histogram() +
+  xlab("ST depression induced by exercise relative to rest") +
+  ylab("Count") +
+  ggtitle("Analysis of ST depression induced by exercise relative to rest")
+
+```
+
+
+```{r}
+data2$oldpeak <- log1p(data2$oldpeak)
+
+plot7 <- ggplot(data2, aes(x = oldpeak)) + 
+  geom_histogram() +
+  xlab("ST depression induced by exercise relative to rest") +
+  ylab("Count") +
+  ggtitle("Analysis of ST depression induced by exercise relative to rest")
+```
+
+```{r}
+# Density plot for oldpeak ~ target
+plot8 <- ggplot(data2, aes(x = oldpeak, fill = num_bin)) +
+  geom_density(alpha=0.5) +
+  xlab("ST depression induced") +
+  ylab("Count") +
+  ggtitle("Analysis of ST depression induced and presence of heart disease") +
+  scale_fill_discrete(name = "Heart disease", labels = c("No", "Yes"))
+```
+
+
+```{r}
+plot9 <- ggplot(data, aes(x = thalach, fill = num_bin)) +
+  geom_density(alpha=0.5) +
+  xlab("Maximum Heart Rate Achieved") +
+  ylab("Count") +
+  ggtitle("Analysis of relation of heart rate with presence of heart disease") +
+  scale_fill_discrete(name = "Heart disease", labels = c("No", "Yes"))
+
+
+```
+
+
+```{r, fig.height = 4, fig.width = 12}
+plot10 <- ggplot(data, aes(x= location, fill=num_bin)) + 
+  geom_bar(position = 'dodge') +
+  xlab("location") +
+  ylab("count") +
+  ggtitle("Analysis of blood disorder with presence of heart disease") +
+  scale_fill_discrete(name = "Heart disease", labels = c("No", "Yes"))
+
+
+#remove missing values
+data$chol = ifelse(data$chol ==0, NA, data$trestbps)
+data$chol = ifelse(is.na(data$chol),
+                   median(data$chol[which(!is.na(data$chol))]), data$chol)
+
+fill <- "#FF6666"
+line <- "#FF3333"
+plot11 <- ggplot(data, aes(x = num_bin, y = chol)) +
+  geom_boxplot(fill = fill, colour = line, alpha = 0.7) + 
+  scale_x_discrete(name = "heart disease") +
+  scale_y_continuous(name = "serum cholestoral in mg/dl") +
+  ggtitle("Boxplot of serum cholestoral")
+
+# Relationship among continous variables
+
+plot12 <- ggplot(data, aes(x = chol, y = trestbps)) +
+    geom_point(aes(color = factor(num_bin))) +
+    ggtitle("Relation of trestbps vs chol ") +
+    scale_fill_discrete(name = "Heart disease", labels = c("No", "Yes"))
+
+gridExtra::grid.arrange(plot1, plot2, ncol = 2)
+gridExtra::grid.arrange(plot3, plot4, ncol = 2)
+gridExtra::grid.arrange(plot5, plot6, ncol = 2)
+gridExtra::grid.arrange(plot7, plot8, ncol = 2)
+gridExtra::grid.arrange(plot9, plot10, ncol = 2)
+gridExtra::grid.arrange(plot11, plot12, ncol = 2)
+```
+
+
+[^1]: [Heart Disease Data Set](https://archive.ics.uci.edu/ml/datasets/Heart+Disease)
+
+
+
+
+
+

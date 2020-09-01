@@ -1,0 +1,342 @@
+---
+title: "Credit Card Fraud Detection"
+author: "Ashley Shang "
+output:
+  html_document: 
+    theme: cosmo
+    toc: yes
+  pdf_document: default
+urlcolor: BrickRed
+---
+
+```{r, setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, 
+                      fig.align = 'center', message = FALSE)
+```
+
+```{r}
+library(tidyverse)
+library(reshape2)
+library(caret)
+library(gbm)
+library(ROSE)
+library(readr)
+library(tibble)
+library(knitr)
+library(kableExtra)
+library(MASS)
+library(nnet)
+library(klaR)
+library(randomForest)
+library(DMwR)
+library(pROC)
+library(purrr)
+library(kernlab)
+```
+
+
+# abstract
+ > Fraud is one of the major ethical issues in the credit card industry. The main aims are, firstly, to identify the different types of credit card fraud, and, secondly, to review alternative techniques that have been used in fraud detection. 
+ 
+---
+
+
+# Introduction
+
+
+Credit card fraud is increasing considerably with the development of modern technology and the global superhighways of communication. Credit card fraud costs consumers and the financial company billions of dollars annually, and fraudsters continuously try to find new rules and tactics to commit illegal actions. Thus, fraud detection systems have become essential for banks and financial institution, to minimize their losses. However, there is a lack of published literature on credit card fraud detection techniques, due to the unavailable credit card transactions dataset for researchers. The most commonly techniques used fraud detection methods are Naïve Bayes (NB), Support Vector Machines (SVM), K-Nearest Neighbor algorithms (KNN). These techniques can be used alone or in collaboration using ensemble or meta-learning techniques to build classifiers. But amongst all existing method, ensemble learning methods are identified as popular and common method, not because of its quite straightforward implementation, but also due to its exceptional predictive performance on practical problems. In this paper we trained various data mining techniques used in credit card fraud detection and evaluate each methodology based on certain design criteria. After several trial and comparisons; we introduced the bagging classifier based on decision three, as the best classifier to construct the fraud detection model. The performance evaluation is performed on real life credit card transactions dataset to demonstrate the benefit of the bagging ensemble algorithm.
+
+
+
+---
+
+# Methods 
+## Data
+The datasets from Kaggle^[1] contains transactions made by credit cards in September 2013 by european cardholders. This dataset presents transactions that occurred in two days, where we have 492 frauds out of 284,315 transactions. It has 30 input features and 1 target variable. The dataset is highly unbalanced, the positive class (frauds) account for 0.173% of all transactions.
+
+Due to confidentiality issues, Kaggle doesn’t provide the background information about the 28 features out of 30. The only Features defined are ‘Time’ and ‘Amount’. ‘Time’ contains the seconds elapsed between each transaction and the first transaction in the dataset. The feature ‘Amount’ is the Transaction Amount. ‘Class’ is the target variable and it is 1 in case of fraud and 0 otherwise.
+
+## Modeling
+
+In order to detect whether a transaction is fraudulent or not, five modeling techniques were considered: logistic regression, random forest, boosted tree, SVM and Nural Network. Default tuning parameters were used to train these models. Variable `Time` is deleted for analysis after EDA. 
+
+## Evaluation
+
+To evaluate the ability to classify whether one has heart disease with these models, the data was split into training and testing sets, and 5-fold cross validation technique has been involved, however, for the random forest, out-of-bag technique is used. AUC and accuracy of the models are reported using the test data in the Results section. In addition, `loss` is manually added to evaluate the model performance as well. The rule of `loss` is as follow:
+
+$$Loss = 
+\begin{cases}
+1,& \text{if False Positive}\\
+0.5 \times \text{(Actual Amount)},& \text{if False Negtive}\\
+    0,              & \text{otherwise}
+\end{cases}$$
+
+
+```{r, comment=FALSE}
+# set seed 
+set.seed(6386)
+
+# read in data
+cc = read_csv(file = "https://fall-2019.stat432.org/analyses/data/cc-sub.csv")
+
+# randomly split data
+trn_idx = sample(nrow(cc), size = 0.5 * nrow(cc))
+cc_trn = cc[trn_idx, ]
+cc_tst = cc[-trn_idx, ]
+cc_trn$Class <- factor(cc_trn$Class)
+cc_tst$Class <- factor(cc_tst$Class)
+```
+
+
+```{r, warning=FALSE}
+#logistic model
+set.seed(42)
+logis_mod <- train(Class ~ .-Time, data = cc_trn,
+                 preProcess = c("center", "scale"),
+                 method = "glm", family = 'binomial',
+                 trControl = trainControl(method = "cv",
+                                          number = 5,
+                                          sampling = "smote",
+                                          classProbs = TRUE,
+                                          summaryFunction = twoClassSummary),
+                 metric = "ROC")
+logis_prob <- predict(logis_mod, cc_tst, type = "prob")[2]
+logis_acc <- mean(predict(logis_mod, cc_tst) == cc_tst$Class)
+logis_auc <- roc(as.numeric(cc_tst$Class),
+                    as.numeric(as.matrix(logis_prob)), quiet = TRUE)$auc
+```
+
+```{r}
+#rf model
+set.seed(42)
+rf_mod <- train(Class ~ .-Time, data = cc_trn,
+                 preProcess = c("center", "scale"),
+                 method = "rf",
+                 trControl = trainControl(method = "cv",
+                                          number = 5,
+                                          sampling = "smote",
+                                          classProbs = TRUE,
+                                          summaryFunction = twoClassSummary),
+                 metric = "ROC")
+rf_prob <- predict(rf_mod, cc_tst, type = "prob")[2]
+rf_acc <- mean(predict(rf_mod, cc_tst) == cc_tst$Class)
+rf_auc <- roc(as.numeric(cc_tst$Class),
+                    as.numeric(as.matrix(rf_prob)), quiet = TRUE)$auc
+```
+
+
+
+```{r}
+#gbm model
+set.seed(42)
+gbm_mod <- train(Class ~ .-Time, data = cc_trn,
+                 preProcess = c("center", "scale"), 
+                 method = "gbm",
+                 trControl = trainControl(method = "cv",
+                                          number = 5,
+                                          sampling = "smote",
+                                          classProbs = TRUE,
+                                          summaryFunction = twoClassSummary),
+                 metric = "ROC", verbose = FALSE)
+gbm_prob <- predict(gbm_mod, cc_tst, type = "prob")[2]
+gbm_acc <- mean(predict(gbm_mod, cc_tst) == cc_tst$Class)
+gbm_auc <- roc(as.numeric(cc_tst$Class),
+                    as.numeric(as.matrix(gbm_prob)), quiet = TRUE)$auc
+```
+
+
+
+```{r}
+#svm model
+set.seed(42)
+svm_mod <- train(Class ~ .-Time, data = cc_trn,
+                 preProcess = c("center", "scale"), 
+                 method = "svmRadial",
+                 trControl = trainControl(method = "cv",
+                                          number = 5,
+                                          sampling = "smote",
+                                          classProbs = TRUE,
+                                          summaryFunction = twoClassSummary),
+                 metric = "ROC", verbose = FALSE)
+svm_prob <- predict(svm_mod, cc_tst, type = "prob")[2]
+svm_acc <- mean(predict(svm_mod, cc_tst) == cc_tst$Class)
+svm_auc <- roc(as.numeric(cc_tst$Class),
+                    as.numeric(as.matrix(svm_prob)), quiet = TRUE)$auc
+```
+
+```{r}
+#neural network model
+set.seed(42)
+nnet_mod <- train(Class ~ .-Time, data = cc_trn,
+                 preProcess = c("center", "scale"), 
+                 method = "nnet",
+                 trControl = trainControl(method = "cv",
+                                          number = 5,
+                                          sampling = "smote",
+                                          classProbs = TRUE,
+                                          summaryFunction = twoClassSummary),
+                 metric = "ROC", trace = F)
+nnet_prob <- predict(nnet_mod, cc_tst, type = "prob")[2]
+nnet_acc <- mean(predict(nnet_mod, cc_tst) == cc_tst$Class)
+nnet_auc <- roc(as.numeric(cc_tst$Class),
+                    as.numeric(as.matrix(nnet_prob)), quiet = TRUE)$auc
+```
+
+
+```{r}
+getloss <- function(mod){
+  n <- nrow(cc_tst)
+  loss <- numeric(n)
+  pred <- predict(mod, cc_tst)
+  for (i in 1 : n) {
+    if(cc_tst$Class[i] == "genuine" & pred[i] == "fraud") loss[i] <- 1
+    else if(cc_tst$Class[i] == "fraud" & pred[i] == "genuine") loss[i] <- .5 * cc_tst$Amount[i]
+    else loss[i] <- 0
+  }
+  return(loss)
+}
+```
+
+```{r}
+logis_loss <- sum(getloss(logis_mod)) #worst
+rf_loss <- sum(getloss(rf_mod)) 
+gbm_loss <- sum(getloss(gbm_mod)) #best
+svm_loss <- sum(getloss(svm_mod))
+nnet_loss <- sum(getloss(nnet_mod))
+```
+
+
+
+---
+
+# Result
+
+
+```{r}
+loss <- data.frame(as.numeric(c(logis_loss, rf_loss, 
+                                gbm_loss, svm_loss, nnet_loss)))
+names(loss) <- "Total Loss"
+
+acc <- data.frame(as.numeric(c(logis_acc, rf_acc, 
+                               gbm_acc, svm_acc, nnet_acc)))
+names(acc) <- "Accuracy"
+
+auc <- data.frame(as.numeric(c(logis_auc, rf_auc, 
+                               gbm_auc, svm_auc, nnet_auc)))
+names(auc) <- "AUC"
+
+result <- cbind(auc, acc, loss)
+rownames(result) <- c("logistic", 
+                      "random forest", 
+                      "boosted tree",
+                      "SVM",
+                      "Nural Network")
+result %>% 
+  kable("html") %>% 
+  kable_styling("striped", full_width = FALSE)
+```
+
+
+```{r}
+pred <- factor(predict(gbm_mod, cc_tst))
+kable(t(as.matrix(table(pred)))) %>% 
+kable_styling(full_width = FALSE, bootstrap_options = "striped")
+```
+
+
+
+
+---
+
+# Discussion
+ 
+After investigated the data, checking for data unbalancing, visualizing the features and understanding the relationship between different features, then 5 models were applied to the training data and test on the testing data to obtain the results above. It is obvious that among all above models, the gradient boosted tree holds the best performance, way better than the logistic regression model. The smote upsampling method was involved to deal with the imbalanced data.
+
+This experiment only considered part of the data, and the dataset did not show very conspicuous correlations between the variables, otherwise it would be interesting to further analysis the ananymous features. 
+
+
+
+---
+
+# Appendix
+## EDA
+
+```{r}
+#imbalanced response
+cc_trn %>% 
+  count(Class) %>% 
+  kable() %>% 
+  kable_styling(bootstrap_options = "striped")
+```
+
+
+```{r}
+# the distribution of the monetary value of all transactions is heavily right-skewed.
+pA <- ggplot(cc_trn, aes(cc_trn$Amount)) +
+   geom_histogram(aes(x = cc_trn$Amount, y=..count..), 
+                  position="identity", 
+                  fill = "#FF0000", alpha = .5) + 
+   geom_density(aes(y=..count..), col = "red") +
+   ggtitle("Distribution of Monetary Value Feature") + 
+   xlab("Amount") + ylab(" ")
+```
+
+```{r}
+# Time
+pT <- ggplot(cc_trn, aes(cc_trn$Time)) +
+   geom_histogram(aes(x = cc_trn$Time, y=..density..), 
+                  position="identity", 
+                  fill = "#FF0000", alpha = .5) + 
+   geom_density(aes(y=..density..), col = "red") +
+   ggtitle("Distribution of Time Feature") + 
+   xlab("Time") + ylab(" ") +
+   scale_y_continuous(labels = function(x) format(x, scientific = FALSE))
+```
+
+```{r,fig.width=20}
+cormat <- round(cor(cc_trn[2:29]),2)
+melted_cormat <- melt(cormat)
+pc <- ggplot(data = melted_cormat, aes(x=Var1, y=Var2, fill=value)) + 
+  geom_tile() +
+  scale_fill_gradient2(low="#990000", high="#FF9999", guide="colorbar") +
+    theme(text = element_text(size=10),
+        axis.text.x = element_text(angle=45, hjust=1)) 
+
+gridExtra::grid.arrange(pA, pT, pc, ncol = 3)
+```
+
+
+
+
+
+```{r,fig.width=14}
+p4 <- ggplot(cc_trn, aes(x = cc_trn$Class, 
+                         y = cc_trn$V4, 
+                         fill = cc_trn$Class)) + 
+  geom_boxplot() +
+  xlab("Class") +
+  ylab("V4") +
+  scale_fill_discrete(name = "Class")
+
+p11 <- ggplot(cc_trn, aes(x = cc_trn$Class, 
+                         y = cc_trn$V11, 
+                         fill = cc_trn$Class)) + 
+  geom_boxplot() +
+  xlab("Class") +
+  ylab("V11") +
+  scale_fill_discrete(name = "Class")
+
+
+gridExtra::grid.arrange(p4, p11, ncol = 2)
+```
+
+
+
+
+
+
+
+
+[^1]: [Credit Card dataset](https://www.kaggle.com/mlg-ulb/creditcardfraud)
+
+

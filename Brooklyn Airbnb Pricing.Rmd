@@ -1,0 +1,252 @@
+---
+title: "Brooklyn Airbnb Pricing"
+author: "Ashley Shang"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document: 
+    theme: cosmo
+    toc: yes
+  pdf_document: default
+urlcolor: BrickRed
+---
+
+```{r, setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE, fig.align = 'center')
+```
+
+```{r, load-packages, include = FALSE}
+library(readr)
+library(tibble)
+library(rsample)
+library(dplyr)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+library(purrr)
+```
+
+***
+
+# Abstract
+
+ > With the technology rushing in people's life, online lodging booking becomes more efficient and more trendy. Companies like Airbnb sprang up rapidly, bringing out myriad of data regarding the modern rental. Statistical learning techniques are used to determine if the price is reasonable based on the listing information to place the order more effectively.
+
+***
+
+# Introduction
+
+It is beyond a shadow of a doubt that as the standard of lives keeps growing, people are more likely to travel around to release the stress from the fast-paced life, which renders the rendal and rental industry become more important. One of people's common choices is to order rooms online. There usually are plenty of information available on the websites, but people always have trouble choosing an appropriate place. It is because in metropolises like New York City, rentals are always far too numerous, and the corresponding information is overload so that people really have a hard time estimate whether a place is worth to live or not. So what information is most valuable for the customers?
+
+The rationality of such online rentals remains in question. While the breadth of data that they make available is interesting, the most important by far is the price. People should know how to pick put the useful data they need, to further consider if the cost is worthy. If there is an common law beneath the pricing process to help costumers single out the rentals they want with lowest price, the usage of such websites would reach to its maximum value.
+
+Statistical learning techniques were applied to a subset of Brooklyn data from a Airbnb[^1]. 8 variables was used to predict the rental price. The results indicate that by using simple models, this prediction can be made with an acceptable amount of error. However, practical and statistical limitations suggest the need for further investigation.
+
+
+
+***
+
+# Methods
+
+## Data
+
+The data was accessed via Kaggle. [^1] It contains information on Airbnb listings in New York, NY during 2019 including price, rental attributes, and location. For the purposes of this analysis, the data was restricted to short term (one week or less) rentals in Brooklyn that rent for less than $1000 a night. (Additionally, only rentals that have been reviewed are included.)
+
+```{r, load-data, message = FALSE}
+airbnb = read_csv(file = "data/AB_NYC_2019.csv")
+```
+
+```{r, subset-data}
+brooklyn = airbnb %>% 
+  filter(minimum_nights <= 7) %>%
+  filter(neighbourhood_group == "Brooklyn") %>% 
+  filter(number_of_reviews > 0) %>%
+  filter(price > 0, price < 1000) %>% 
+  na.omit() %>% 
+  select(latitude, longitude, room_type, price, minimum_nights, number_of_reviews, 
+         reviews_per_month, calculated_host_listings_count, availability_365) %>% 
+  mutate(room_type = as.factor(room_type))
+```
+
+```{r, split-data}
+set.seed(42)
+# test-train split
+bk_tst_trn_split = initial_split(brooklyn, prop = 0.80)
+bk_trn = training(bk_tst_trn_split)
+bk_tst = testing(bk_tst_trn_split)
+# estimation-validation split
+bk_est_val_split = initial_split(bk_trn, prop = 0.80)
+bk_est = training(bk_est_val_split)
+bk_val = testing(bk_est_val_split)
+```
+
+## Modeling
+
+In order to predict the price of rentals, three modeling techniques were considered: linear models, k-nearest neighbors models, and decision tree models. 
+
+- Linear models with and without log transformed responses were considered. Various subsets of predictors, with and without interaction terms were explored.
+- k-nearest neighbors models were trained using all available predictor variables. The choice of k was chosen using a validation set.
+- Decision tree models were trained using all available predictors. The choice of the complexity parameter was chosen using a validation set.
+
+```{r, linear-models}
+full_lm_mod = lm(price ~ ., data = bk_est)
+backward_mod = step(full_lm_mod, direction = "backward", trace = 0)
+backward_inter_mod = step(lm(price ~ . ^ 2, data = bk_est), 
+                             direction = "backward", trace = 0)
+log_mod = lm(I(log(price)) ~ ., data = bk_est)
+backward_log_mod = step(log_mod, direction = "backward", trace = 0)
+backward_log_inter_mod = step(lm(I(log(price)) ~ . ^ 2, data = bk_est), 
+                                 direction = "backward", trace = 0)
+```
+
+```{r, knn-models, fig.height = 6, fig.width = 4, fig.align='center'}
+k = 1:100
+knn_mod = map(k, ~knnreg(price ~ ., data = bk_est, k = .x))
+```
+
+```{r, tree-models}
+cp = c(1.000, 0.100, 0.010, 0.001, 0)
+tree_mod = map(cp, ~rpart(price ~ ., data = bk_est, cp = .x))
+```
+
+## Evaluation
+
+To evaluate the ability to predict rental prices, the data was split into estimation, validation, and testing sets. Error metrics and graphics are reported using the validation data in the Results section.
+
+```{r, rmse-functions}
+calc_rmse = function(actual, predicted) {
+  sqrt(mean( (actual - predicted) ^ 2) )
+}
+
+calc_rmse_model = function(model, data, response) {
+  actual = data[[response]]
+  predicted = predict(model, data)
+  sqrt(mean((actual - predicted) ^ 2))
+}
+
+calc_rmse_log_model = function(model, data, response) {
+  actual = data[[response]]
+  predicted = exp(predict(model, data))
+  sqrt(mean((actual - predicted) ^ 2))
+}
+```
+
+***
+
+# Results
+
+```{r, calc-validation-error-lm}
+# TODO: calculate validation error for linear models
+lm_mod = list(full_lm_mod, backward_mod, backward_inter_mod)
+lm_log_mod = list(log_mod, backward_log_mod, backward_log_inter_mod)
+lm_rmse = sapply(lm_mod, calc_rmse_model, data = bk_val, response = 'price')
+lm_log_rmse = sapply(lm_log_mod, calc_rmse_log_model, data = bk_val, response = 'price')
+rmse_lm_mod = data.frame("linear model validation RMSE" = lm_rmse, 
+                         "log response validation RMSE" = lm_log_rmse, check.names = FALSE)
+```
+
+```{r, calc-validation-error-knn}
+# TODO: calculate validation error for knn models
+knn_rmse = map(knn_mod, ~calc_rmse_model(.x, data = bk_val, response = 'price'))
+knn_rmse = data.frame(knn_rmse)
+names(knn_rmse) = paste("k = ", as.character(1:100))
+```
+
+
+```{r, calc-validation-error-tree}
+tree_rmse = tree_mod %>%
+  map(~calc_rmse_model(.x, data = bk_val, response = 'price'))
+names(tree_rmse) = c("cp=1.000", "cp=0.100", "cp=0.010", "cp=0.001", "cp=0")
+tree_rmse = data.frame(tree_rmse, check.names = FALSE)
+rownames(tree_rmse) = "decision tree RMSE"
+```
+
+```{r, numeric-results}
+data.frame("model" = c("linear", "knn", "decision tree"),
+           "lowest RMSE" = c(min(lm_log_rmse), min(knn_rmse), min(tree_rmse)),
+           "structure/parameter" = c("with all predictors and 2-way interactions", 
+                                     "k = 44", "cp = 0.001"), check.names = FALSE) %>%
+  kable(format = "html") %>%
+  kable_styling(full_width = FALSE, bootstrap_options = c("striped"))
+```
+
+```{r, graphical-results, fig.height = 4, fig.width = 12}
+best_lm = step(lm(price ~ . ^ 2, data = bk_trn), 
+                  direction = "backward", trace = 0)
+best_knn = knnreg(price ~ ., data = bk_trn, k = 44)
+best_tree = rpart(price ~ ., data = bk_trn, cp = 0.001)
+x_lim = c(0, 300)
+y_lim = c(0, 300)
+par(mfrow = c(1,3))
+plot(bk_tst$price, predict(best_lm, bk_tst), xlim = x_lim, ylim = y_lim,
+     xlab = "predicted", ylab = "actual", main = "linear model")
+grid()
+abline(0,1)
+
+plot(predict(best_knn, bk_tst), bk_tst$price, xlim = x_lim, ylim = y_lim,
+     xlab = "predicted", ylab = "actual", main = "KNN model")
+grid()
+abline(0,1)
+
+plot(predict(best_tree, bk_tst), bk_tst$price, xlim = x_lim, ylim = y_lim,
+     xlab = "predicted", ylab = "actual", main = "Decision Tree")
+grid()
+abline(0,1)
+```
+
+***
+
+# Discussion
+
+```{r, test-rmse}
+RMSE(bk_tst$price, predict(best_lm, newdata = bk_tst))
+```
+
+
+From the graphs and RMSE value, one can tell that even the best model does not hold a wonderful prediction performance, but it is easy to say under our choosen models, the linear model has the best performance, and it captures the trend of data roughly. The linear models with log response has almost same performance on the validation set camparing to those with regular response, but all of those with 2-way interactions as predictors have distinguishingly better performance on validation dataset, i.e., having lower validation RMSE. While the improvement of KNN models is no longer statistically significant once k reach 20. However, even if the model seems to reach its best performance, it still has a unsatisfying RMSE. It is the test RMSE of the best linear model showing above. In fact, the tree model with cp=0.001 has nearly the same RSME value with the linear model. One way to improve the performance is to combine different useful model, which entails to further analysis.
+
+***
+
+# Appendix
+
+## Data Dictionary
+
+- `latitude` - latitude coordinates of the listing
+- `longitude` - longitude coordinates of the listing
+- `room_type` - listing space type
+- `price` - price in dollars
+- `minimum_nights` - amount of nights minimum
+- `number_of_reviews` - number of reviews
+- `reviews_per_month` - number of reviews per month
+- `calculated_host_listings_count` - amount of listing per host
+- `availability_365` - number of days when listing is available for booking
+
+For additional background on the data, see the data source on Kaggle.
+
+## EDA
+
+```{r, eda-plots, fig.height = 4, fig.width = 12, message = FALSE}
+plot_1 = bk_trn %>% 
+  ggplot(aes(x = price)) + 
+  geom_histogram(bins = 30)
+
+plot_2 = bk_trn %>% 
+  ggplot(aes(x = room_type, y = price, colour = price)) + 
+  geom_boxplot()
+
+plot_3 = bk_trn %>% 
+  ggplot(aes(x = reviews_per_month, y = price)) + 
+  geom_point() + geom_smooth(span = 0.3)
+
+gridExtra::grid.arrange(plot_1, plot_2, plot_3, ncol = 3)
+```
+
+```{r, price-map, fig.height = 12, fig.width = 12}
+bk_trn %>% 
+  ggplot(aes(x = longitude, y = latitude, colour = price)) + 
+  geom_point()
+```
+
+[^1]: [New York City Airbnb Open Data](https://www.kaggle.com/dgomonov/new-york-city-airbnb-open-data)

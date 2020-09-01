@@ -1,0 +1,531 @@
+---
+title: "Wine Quality Test"
+author: "Ashley Shang"
+output:
+  html_document: 
+    theme: cosmo
+    toc: yes
+  pdf_document: default
+urlcolor: BrickRed
+---
+
+```{r, setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, 
+                      fig.align = 'center', message = FALSE)
+```
+
+```{r, load-packages, message=FALSE}
+library(tidyverse)
+library(rsample)
+library(caret)
+library(gbm)
+library(readr)
+library(tibble)
+library(knitr)
+library(kableExtra)
+library(klaR)
+library(randomForest)
+library(pROC)
+library(corrplot)
+library(GGally)
+library(ranger)
+library(DMwR)
+```
+
+
+***
+
+# Abstract
+
+> Statistical learning methods were applied to physiochemical properties data of wine in order to classify the level of quality of the wine. A variety of learning techniques were explored and validated. Simple methods like logistic regression show promise, but further data collection and analysis is recommended.
+
+***
+
+# Introduction
+
+Wine[^1] (from Latin vinum) is an alcoholic beverage made from grapes, generally Vitis vinifera, fermented without the addition of sugars, acids, enzymes, water, or other nutrients.
+
+Yeast consumes the sugar in the grapes and converts it to ethanol and carbon dioxide. Different varieties of grapes and strains of yeasts produce different styles of wine. These variations result from the complex interactions between the biochemical development of the grape, the reactions involved in fermentation, the terroir, and the production process. Many countries enact legal appellations intended to define styles and qualities of wine. These typically restrict the geographical origin and permitted varieties of grapes, as well as other aspects of wine production. Wines not made from grapes include rice wine and fruit wines such as plum, cherry, pomegranate and elderberry. Wine has been produced for thousands of years. The earliest known traces of wine are from China , Georgia ,Iran ,and Sicily. The Wine in this experiment is red and white vinho verde wine. 
+
+
+***
+
+# Methods
+
+## Data
+
+The data originates from the UCI Machine Learning Repository[^2]. Two datasets are included, related to red and white vinho verde wine samples, from the north of Portugal[^3]. Due to privacy and logistic issues, only physicochemical (inputs) and sensory (the output) variables are available.
+
+```{r, quality-vs-color}
+wine0 <- as_tibble(ucidata::wine)
+wine0$quality_bin <- factor(ifelse(wine0$quality > 6, 1, 0))
+p_red <- sum(wine0$color == "Red" & wine0$quality_bin == 1) / sum(wine0$color == "Red")
+p_white <- sum(wine0$color == "White" & wine0$quality_bin == 1) / sum(wine0$color == "White")
+
+tab <- data.frame("P(good|red)" = p_red, 
+                  "P(good|white)" = p_white, 
+                  check.names = FALSE)
+kable(tab, digits = 3,
+      caption = "Table: quality vs color") %>% 
+  kable_styling("striped", full_width = FALSE) 
+```
+
+Due to the non-significance between the quality distributions of wine in different colors, the factor `color` is remove for the following analysis.
+
+```{r, load-data, message=FALSE}
+devtools::install_github("coatless/ucidata")
+wine <- as_tibble(ucidata::wine)
+wine <- wine %>% 
+  dplyr::select(-color)
+
+wine$quality_bin <- factor(ifelse(wine$quality > 6, "good", "bad"))
+wine$quality <- as.factor(wine$quality)
+
+set.seed(42)
+wine_split <- initial_split(wine, .8)
+wine_trn <- training(wine_split)
+wine_tst <- testing(wine_split)
+```
+
+
+
+## Modeling
+
+In order to classify the level of wine quality, several classification strategies were explored. Both multiclass models, using the 7 possible quality levels, as well as binary models, only considering whether or not the wine is good, were considered.
+
+For multi-classification, two modeling strategies were considered:
+
+- Random Forests, though the use of the `ranger`[^4] package. (The `ranger` packages implements random forests, as well as extremely randomized trees. The difference is considered a tuning parameter.)
+- Gradient boosted tree for the multiclass outcome.
+
+For the binary models:
+
+- Logistic regression (using built in `R` functionality) for the binary outcome and Multinomial Regression, through the use of the `nnet` package, for the binary outcome.
+- Random Forests, though the use of the `ranger` package.
+
+Additional modeling techniques were considered, but did not produce meaningful results.
+
+## Evaluation
+
+All the models were tuned using 5-fold cross-validation. Multiclass models were tuned for accuracy, while the binary models were tuned to maximize area under the ROC curve. For the multiclass models, the eventual accuracy and AUC are all presented.
+
+Models were ultimately evaluated based on their ability to prdict the quality of the given wine based on its physiochemical properties. For the multiclass models, predictions of level 3 through 9 were collapsed to simply indicate the quality level. However, these binary predictions were compared to the true multiclass outcome. This allows to directly detect the misclassification in order to evaluate the model clearly. 
+
+
+
+```{r, gbm-multi}
+auc <- list()
+accuracy <- list()
+bin_acc <- list()
+tr_contr <- trainControl(method = "cv", number = 5)
+set.seed(42)
+gbm_mod <- train(quality ~ . - quality_bin, data = wine_trn,
+                trControl = tr_contr, 
+                method = "gbm", verbose = FALSE)
+
+
+
+gbm_mat <- confusionMatrix(predict(gbm_mod, wine_tst),
+                           factor(wine_tst$quality))
+
+# 0.5589    
+accuracy$gbm <- gbm_mat$overall['Accuracy']
+```
+
+
+```{r, rf-multi}
+set.seed(42)
+rf_mod <- train(quality ~ .-quality_bin, data = wine_trn,
+                trControl = tr_contr,
+                method = "ranger")
+
+rf_mat <- confusionMatrix(predict(rf_mod, wine_tst),
+                           factor(wine_tst$quality))
+
+#0.6721 
+accuracy$rf <- rf_mat$overall['Accuracy']
+```
+
+
+```{r, rf-bin}
+cv_binary <- trainControl(
+  method = "cv",
+  number = 5,
+  sampling = "smote",
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary)
+
+set.seed(42)
+bin_mod_rf <- train(
+  form = quality_bin ~ . - quality, 
+  data = wine_trn,
+  method = "ranger",
+  trControl = cv_binary,
+  metric = "ROC"
+)
+
+bin_rf_mat <- confusionMatrix(predict(bin_mod_rf, wine_tst),
+                factor(wine_tst$quality_bin), positive = "good")
+#0.893 
+bin_rf_prob <- predict(bin_mod_rf, wine_tst, type='prob')[, 2]
+
+
+auc$bin_rf <- roc(as.numeric(wine_tst$quality_bin),
+              as.numeric(as.matrix(bin_rf_prob)))$auc
+bin_acc$bin_rf <- bin_rf_mat$overall['Accuracy']
+```
+
+```{r, glm-bin}
+set.seed(42)
+bin_mod_glm <- train(
+  form = quality_bin ~ . - quality, 
+  data = wine_trn,
+  method = "glm",
+  trControl = cv_binary,
+  metric = "ROC"
+)
+
+bin_glm_mat <- confusionMatrix(predict(bin_mod_glm, wine_tst),
+                factor(wine_tst$quality_bin), positive = "good")
+
+#0.816   
+bin_glm_prob <- predict(bin_mod_glm, wine_tst, type='prob')[, 2]
+
+
+auc$bin_glm <- roc(as.numeric(wine_tst$quality_bin),
+              as.numeric(as.matrix(bin_glm_prob)))$auc
+bin_acc$bin_glm <- bin_glm_mat$overall['Accuracy']
+```
+
+
+***
+
+# Results
+
+The results below show unconspicuously distinguished performance across the methods considered. Ultimately, the binary random forest is chosen as it makes severe errors less frequently. 
+
+```{r, results}
+auc <- data.frame(as.numeric(auc))
+names(auc) <- "AUC"
+bin_acc <- data.frame(as.numeric(bin_acc))
+names(bin_acc) <- "Accuracy"
+bin_result <- cbind(auc, bin_acc)
+rownames(bin_result) <- c("Random Forest", 
+                      "Logistic Model")
+bin_result %>% 
+  kable(caption = "Table: Bi-class models", "html") %>% 
+  kable_styling("striped", full_width = FALSE)
+```
+
+```{r, result-bin}
+
+accuracy <- data.frame(as.numeric(accuracy))
+names(accuracy) <- "Accuracy"
+rownames(accuracy) <- c("Gradient Boosted Tree",
+                        "Random Forest")
+accuracy %>% 
+  kable(caption = "Table: Multiclass models", "html") %>% 
+  kable_styling("striped", full_width = FALSE)
+```
+
+
+
+
+```{r, output-table}
+smash_table <- function(tab, caption = caption) {
+  
+  out <- rbind(colSums(tab$table[1:4, ]),
+              colSums(tab$table[5:7, ]))
+  
+  rownames(out) <- c("Predict: bad", "Predict: good")
+  
+  out %>% 
+    kable(caption = caption, digits = 3) %>% 
+    kable_styling("striped", full_width = FALSE) %>%
+    add_header_above(c(" " = 1, "True Level of Quality" = 7)) %>% 
+    column_spec(column = 1, bold = TRUE)
+}
+```
+
+
+```{r, tables}
+smash_table(gbm_mat, 
+            caption = "Table: Multiclass boosted tree, Test Binary  
+                       Predictions versus Multiclass Response")
+
+smash_table(rf_mat, 
+            caption = "Table: Multiclass random forest, Test Binary 
+                       Binary Predictions versus Multiclass Response")
+```
+
+
+***
+
+# Discussion
+
+
+Among all the models considered, the random forest holds the best performance, for both multiclass and binary class. But within the provided data, there are several issue to be dealt with. For instance, variable `density` has a high VIF value, which means that it shows significant multicollinearity. In order to solve that, it is better to use methods such as PCA to process data. Moreover, some varibles show a relatively distinct correlation. Another issue is that the good wine sample size is obviously smaller than the bad sample, which indicates seriously imbalanced response. The SMOTE sampling was involved to deal with this situation. And it significantly improves the results. But for multiclass, the data sets for some quality levels are too small so that the subsampling rate will be too large, so only apply the upsampling on the binary models.
+
+
+Using the "best" model for prediction and the results are as follow.
+
+```{r}
+pred_tst = predict(bin_mod_rf, wine_tst)
+tst_tab = table(predicted = pred_tst, actual = wine_tst$quality)
+rownames(tst_tab) = c("Predict: bad", "Predict: good")
+#tst_tab_perc = 100 * tst_tab / sum(tst_tab)
+
+  
+tst_tab %>% 
+  kable(caption = "Table: Test Results - Binary Random Forest") %>% 
+  kable_styling("striped", full_width = FALSE) %>%
+  add_header_above(c(" " = 1, "True Levelr of Quality" = 7)) %>% 
+  column_spec(column = 1, bold = TRUE)
+```
+
+
+
+
+***
+
+# Appendix
+
+## EDA
+
+```{r, dists-of-features}
+dist <- ggplot(wine,aes(x = quality,
+                fill = factor(quality))) + 
+  geom_bar(stat = "count",position = "dodge") +
+  ggtitle("Distribution of Qualities") +
+  xlab("Quality level") + 
+  scale_fill_discrete(name = "quality") + 
+  theme_classic()
+
+dist0 <- ggplot(wine,aes(x = quality_bin,
+                fill = factor(quality_bin))) + 
+  geom_bar(stat = "count",position = "dodge") +
+  ggtitle("Distribution of Good/Bad Wines") +
+  xlab("Whether the wine is good") + 
+  scale_fill_discrete(name = "good quality") + 
+  theme_classic()
+```
+```{r}
+#Fixed Acidity and Wine Quality
+dist1 <- ggplot(wine, aes(x = fixed_acidity, 
+                 fill = factor(quality_bin))) +
+  geom_density(alpha = 0.25) +
+  geom_vline(aes(xintercept = mean(fixed_acidity[quality_bin == 0], 
+                                   na.rm = T)), 
+             color = "red", linetype = "dashed", lwd = 1) +
+  geom_vline(aes(xintercept = mean(fixed_acidity[quality_bin == 1], 
+                                   na.rm = T)), 
+             color = "blue", linetype = "dashed", lwd = 1) +
+  scale_x_continuous(breaks = seq(4, 16, 1)) +
+  xlab(label = "Fixed Acidity Level") +
+  ggtitle("Distribution of Fixed Acidity Levels") +
+  scale_fill_discrete(name = "good quality") +
+  theme_classic()
+```
+
+```{r}
+#Volatile Acidity and Wine Quality
+dist2 <- ggplot(wine, aes(x = volatile_acidity, 
+                 fill = factor(quality_bin))) + 
+  geom_density(alpha = 0.25) +
+  geom_vline(aes(xintercept = mean(volatile_acidity[quality_bin == 0], 
+                                   na.rm = T)), 
+             color = "red", linetype = "dashed", lwd = 1) +
+  geom_vline(aes(xintercept = mean(volatile_acidity[quality_bin == 1], 
+                                   na.rm = T)), 
+             color = "blue", linetype = "dashed", lwd = 1) +
+  scale_x_continuous(breaks = seq(0, 1.6, 0.1)) +
+  xlab(label = "Volatile Acidity Level") +
+  ggtitle("Distribution of Volatile Acidity Levels") +
+  scale_fill_discrete(name = "good quality") +
+  theme_classic()
+```
+
+```{r}
+#Citric Acid and Wine Quality
+dist3 <- ggplot(wine, aes(x = citric_acid, 
+                 fill = factor(quality_bin))) + 
+  geom_density(alpha = 0.25) +
+  geom_vline(aes(xintercept = mean(citric_acid[quality_bin == 0], 
+                                   na.rm = T)), 
+             color = "red", linetype = "dashed", lwd = 1) +
+  geom_vline(aes(xintercept = mean(citric_acid[quality_bin == 1], 
+                                   na.rm = T)), 
+             color = "blue", linetype = "dashed", lwd = 1) +
+  scale_x_continuous(breaks = seq(0, 1.7, 0.1)) +
+  xlab(label = "Citric Acid Level") +
+  ggtitle("Distribution of Citric Acid Levels") +
+  scale_fill_discrete(name = "good quality") +
+  theme_classic()
+```
+
+```{r}
+#Residual Sugar and Wine Quality
+dist4 <- ggplot(wine, aes(x = residual_sugar, 
+                 fill = factor(quality_bin))) + 
+  geom_density(alpha = 0.25) +
+  geom_vline(aes(xintercept = mean(residual_sugar[quality_bin == 0], 
+                                   na.rm = T)), 
+             color = "red", linetype = "dashed", lwd = 1) +
+  geom_vline(aes(xintercept = mean(residual_sugar[quality_bin == 1], 
+                                   na.rm = T)), 
+             color = "blue", linetype = "dashed", lwd = 1) +
+  scale_x_continuous(breaks = seq(0, 66, 5)) +
+  xlab(label = "Residual Sugar Level") +
+  ggtitle("Distribution of Residual Sugar Levels") +
+  scale_fill_discrete(name = "good quality") +
+  theme_classic()
+```
+
+```{r}
+#Chlorides and Wine Quality
+dist5 <- ggplot(wine, aes(x = chlorides, 
+                 fill = factor(quality_bin))) + 
+  geom_density(alpha = 0.25) +
+  geom_vline(aes(xintercept = mean(chlorides[quality_bin == 0], 
+                                   na.rm = T)), 
+             color = "red", linetype = "dashed", lwd = 1) +
+  geom_vline(aes(xintercept = mean(chlorides[quality_bin == 1], 
+                                   na.rm = T)), 
+             color = "blue", linetype = "dashed", lwd = 1) +
+  scale_x_continuous(breaks = seq(0, .62, .05)) +
+  xlab(label = "Chlorides Level") +
+  ggtitle("Distribution of Chlorides Levels") +
+  scale_fill_discrete(name = "good quality") +
+  theme_classic()
+```
+
+```{r}
+#Free Sulfur Dioxide and Wine Quality
+dist6 <- ggplot(wine, aes(x = free_sulfur_dioxide, 
+                 fill = factor(quality_bin))) + 
+  geom_density(alpha = 0.25) +
+  geom_vline(aes(xintercept = mean(free_sulfur_dioxide[quality_bin == 0], 
+                                   na.rm = T)), 
+             color = "red", linetype = "dashed", lwd = 1) +
+  geom_vline(aes(xintercept = mean(free_sulfur_dioxide[quality_bin == 1], 
+                                   na.rm = T)), 
+             color = "blue", linetype = "dashed", lwd = 1) +
+  scale_x_continuous(breaks = seq(0, 290, 20)) +
+  xlab(label = "Free Sulfur Dioxide Level") +
+  ggtitle("Distribution of Free Sulfur Dioxide Levels") +
+  scale_fill_discrete(name = "good quality") +
+  theme_classic()
+```
+
+```{r}
+#Total Sulfur Dioxide and Wine Quality
+dist7 <- ggplot(wine, aes(x = total_sulfur_dioxide, 
+                 fill = factor(quality_bin))) + 
+  geom_density(alpha = 0.25) +
+  geom_vline(aes(xintercept = mean(total_sulfur_dioxide[quality_bin == 0], 
+                                   na.rm = T)), 
+             color = "red", linetype = "dashed", lwd = 1) +
+  geom_vline(aes(xintercept = mean(total_sulfur_dioxide[quality_bin == 1], 
+                                   na.rm = T)), 
+             color = "blue", linetype = "dashed", lwd = 1) +
+  scale_x_continuous(breaks = seq(0, 440, 40)) +
+  xlab(label = "Total Sulfur Dioxide Level") +
+  ggtitle("Distribution of Total Sulfur Dioxide Levels") +
+  scale_fill_discrete(name = "good quality") +
+  theme_classic()
+```
+
+```{r}
+#Densitye and Wine Quality
+dist8 <- ggplot(wine, aes(x = density, 
+                 fill = factor(quality_bin))) + 
+  geom_density(alpha = 0.25) +
+  geom_vline(aes(xintercept = mean(density[quality_bin == 0], 
+                                   na.rm = T)), 
+             color = "red", linetype = "dashed", lwd = 1) +
+  geom_vline(aes(xintercept = mean(density[quality_bin == 1], 
+                                   na.rm = T)), 
+             color = "blue", linetype = "dashed", lwd = 1) +
+  scale_x_continuous(breaks = seq(.98, 1.04, .01)) +
+  xlab(label = "Density Level") +
+  ggtitle("Distribution of Density") +
+  scale_fill_discrete(name = "good quality") +
+  theme_classic()
+
+#pH and Wine Quality
+dist9 <- ggplot(wine, aes(x = pH, 
+                 fill = factor(quality_bin))) + 
+  geom_density(alpha = 0.25) +
+  geom_vline(aes(xintercept = mean(pH[quality_bin == 0], 
+                                   na.rm = T)), 
+             color = "red", linetype = "dashed", lwd = 1) +
+  geom_vline(aes(xintercept = mean(pH[quality_bin == 1], 
+                                   na.rm = T)), 
+             color = "blue", linetype = "dashed", lwd = 1) +
+  scale_x_continuous(breaks = seq(2.7, 4.2, .2)) +
+  xlab(label = "pH Level") +
+  ggtitle("Distribution of pH") +
+  scale_fill_discrete(name = "good quality") +
+  theme_classic()
+
+#Sulphates and Wine Quality
+dist10 <- ggplot(wine, aes(x = sulphates, 
+                 fill = factor(quality_bin))) + 
+  geom_density(alpha = 0.25) +
+  geom_vline(aes(xintercept = mean(sulphates[quality_bin == 0], 
+                                   na.rm = T)), 
+             color = "red", linetype = "dashed", lwd = 1) +
+  geom_vline(aes(xintercept = mean(sulphates[quality_bin == 1], 
+                                   na.rm = T)), 
+             color = "blue", linetype = "dashed", lwd = 1) +
+  scale_x_continuous(breaks = seq(0, 2, .2)) +
+  xlab(label = "Sulphates Level") +
+  ggtitle("Distribution of Sulphates") +
+  scale_fill_discrete(name = "good quality") +
+  theme_classic()
+
+#Alcohol and Wine Quality
+dist11 <- ggplot(wine, aes(x = alcohol, 
+                 fill = factor(quality_bin))) + 
+  geom_density(alpha = 0.25) +
+  geom_vline(aes(xintercept = mean(alcohol[quality_bin == 0], 
+                                   na.rm = T)), 
+             color = "red", linetype = "dashed", lwd = 1) +
+  geom_vline(aes(xintercept = mean(alcohol[quality_bin == 1], 
+                                   na.rm = T)), 
+             color = "blue", linetype = "dashed", lwd = 1) +
+  scale_x_continuous(breaks = seq(8, 15, 1)) +
+  xlab(label = "Alcohol Level") +
+  ggtitle("Distribution of Alcohol") +
+  scale_fill_discrete(name = "good quality") +
+  theme_classic()
+```
+
+
+Exploratory plots above shows that good and bad wines has very similar distribution of their corresponding physiochemical properties. The most discriminating attribute we can observe is Alcohol level of the wine.
+
+
+
+```{r, print-eda-plots, fig.height = 32, fig.width = 24}
+gridExtra::grid.arrange(dist0, dist1, dist2, dist3, 
+                        dist4, dist5, dist6, dist7, dist8, 
+                        dist9, dist10, dist11, ncol = 3)
+```
+
+```{r, correlation, fig.height = 4, fig.width = 6}
+x <- wine
+x$quality <- as.integer(x$quality)
+M <- cor(x[-13])
+corrplot(M, method = "color", tl.col = "black", 
+         tl.cex = .6, tl.srt = 30)
+```
+
+
+
+
+
+
+[^1]: [Wikipedia: Wine](https://en.wikipedia.org/wiki/Wine)
+[^2]: [Wine Quality Data Set](https://archive.ics.uci.edu/ml/datasets/Wine+Quality)
+[^3]: [Paulo Cortez, Portugal](http://www3.dsi.uminho.pt/pcortez)
+[^4]: [STAT 432: Extremely Randomized Trees, `ranger`, `xgboost`](http://www.montefiore.ulg.ac.be/~ernst/uploads/news/id63/extremely-randomized-trees.pdf)
